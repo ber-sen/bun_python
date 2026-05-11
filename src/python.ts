@@ -350,7 +350,7 @@ export class PyObject {
                     if (!exc.isNone) {
                       reject?.(new Error(exc.toString()));
                     } else {
-                      resolve(future.result().valueOf());
+                      resolve(future.result());
                     }
                   } catch (e) {
                     reject?.(e);

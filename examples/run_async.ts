@@ -23,7 +23,7 @@ const loopDone = python.run_loop();
 try {
   const res = await step("world");
 
-  console.log(res.get("message"));
+  console.log(res.message);
 } finally {
   python.stop_loop();
   await loopDone;

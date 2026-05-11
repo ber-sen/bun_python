@@ -326,8 +326,8 @@ async def slow_add(a, b):
 
   const loopDone = python.run_loop();
   try {
-    expect(await greet("world")).toBe("hello world");
-    expect(await slow_add(3, 4)).toBe(7);
+    expect((await greet("world")).valueOf()).toBe("hello world");
+    expect((await slow_add(3, 4)).valueOf()).toBe(7);
   } finally {
     python.stop_loop();
     await loopDone;
