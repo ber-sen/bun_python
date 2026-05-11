@@ -1,5 +1,4 @@
 import { python } from "..";
-// import path from "node:path";
 
 const { step } = python.runModule(`
 import asyncio
@@ -14,9 +13,6 @@ async def step(name):
         "length": len(name)
     }
 `);
-
-// await Bun.file(path.resolve(import.meta.dir, "test.py")).text(),
-// "test.py",
 
 const interval = setInterval(() => {
   console.log("run");
