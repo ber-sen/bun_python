@@ -329,6 +329,42 @@ export class PyObject {
           return (object as any)[name];
         }
 
+        // Expose then() only for coroutines so they are awaitable as JS Promises
+        if (name === "then" && _runningLoop !== null) {
+          const asyncio = getCachedAsyncio();
+          if (asyncio.iscoroutine(scope).valueOf()) {
+            return (
+              resolve: (v: any) => void,
+              reject?: (e: any) => void
+            ) => {
+              const future =
+                asyncio.run_coroutine_threadsafe(scope, _runningLoop!.proxy);
+              const poll = () => {
+                if (future.done().valueOf()) {
+                  try {
+                    if (future.cancelled().valueOf()) {
+                      reject?.(new Error("Coroutine was cancelled"));
+                      return;
+                    }
+                    const exc = future.exception()[ProxiedPyObject] as PyObject;
+                    if (!exc.isNone) {
+                      reject?.(new Error(exc.toString()));
+                    } else {
+                      resolve(future.result().valueOf());
+                    }
+                  } catch (e) {
+                    reject?.(e);
+                  }
+                } else {
+                  setImmediate(poll);
+                }
+              };
+              setImmediate(poll);
+            };
+          }
+          return undefined;
+        }
+
         if (typeof name === "string" && /^\d+$/.test(name)) {
           if (this.isInstance(python.list) || this.isInstance(python.tuple)) {
             const item = py.PyList_GetItem(this.handle, parseInt(name));
@@ -888,6 +924,46 @@ export function wrapFunction<T extends (...args: any[]) => any>(
 const Inited = Symbol.for("python inited");
 const VenvInjected = Symbol.for("virtual env injected");
 
+// Active asyncio event loop (set by Python#run_loop, cleared on stop)
+let _runningLoop: PyObject | null = null;
+// Resolves the Promise returned by run_loop() when the loop stops
+let _loopResolve: (() => void) | null = null;
+// Lazy-cached asyncio module
+let _cachedAsyncio: any = null;
+function getCachedAsyncio() {
+  if (!_cachedAsyncio) _cachedAsyncio = python.import("asyncio");
+  return _cachedAsyncio;
+}
+
+// Python helper module that manages the asyncio thread without JS callbacks
+const ASYNCIO_HELPER_CODE = `
+import asyncio as _asyncio
+import threading as _threading
+
+_loop = None
+_thread = None
+
+def _bun_start_loop():
+    global _loop, _thread
+    _loop = _asyncio.new_event_loop()
+    _asyncio.set_event_loop(_loop)
+    _thread = _threading.Thread(target=_loop.run_forever, daemon=True)
+    _thread.start()
+
+def _bun_get_loop():
+    return _loop
+
+def _bun_is_running():
+    return _thread is not None and _thread.is_alive()
+`;
+let _asyncioHelper: any = null;
+function getAsyncioHelper() {
+  if (!_asyncioHelper) {
+    _asyncioHelper = python.runModule(ASYNCIO_HELPER_CODE, "_bun_asyncio");
+  }
+  return _asyncioHelper;
+}
+
 const G = global as any as {
   [Inited]: {
     threadState: Pointer;
@@ -1037,6 +1113,52 @@ export class Python {
    */
   import(name: string) {
     return this.importObject(name).proxy;
+  }
+
+  /**
+   * Starts a Python asyncio event loop in a background thread.
+   * Returns a Promise that resolves when the loop is stopped via `stop_loop()`.
+   *
+   * Once running, any proxied Python coroutine can be awaited directly:
+   * ```ts
+   * python.run_loop();
+   * const result = await py_module.my_async_function();
+   * python.stop_loop();
+   * ```
+   */
+  run_loop(): Promise<void> {
+    if (_runningLoop !== null) {
+      throw new Error("An asyncio event loop is already running");
+    }
+    const helper = getAsyncioHelper();
+    helper._bun_start_loop();
+    _runningLoop = helper._bun_get_loop()[ProxiedPyObject];
+    return new Promise<void>((resolve) => {
+      _loopResolve = resolve;
+    });
+  }
+
+  /**
+   * Stops the asyncio event loop started by `run_loop()`.
+   * This resolves the Promise returned by `run_loop()`.
+   */
+  stop_loop() {
+    if (_runningLoop === null) {
+      throw new Error("No asyncio event loop is running");
+    }
+    _runningLoop.proxy.call_soon_threadsafe(_runningLoop.proxy.stop);
+    const helper = getAsyncioHelper();
+    const checkDone = () => {
+      if (!helper._bun_is_running().valueOf()) {
+        _runningLoop = null;
+        const resolve = _loopResolve;
+        _loopResolve = null;
+        resolve?.();
+      } else {
+        setTimeout(checkDone, 5);
+      }
+    };
+    setTimeout(checkDone, 5);
   }
 
   /** Shortcut to create Callback instance. */

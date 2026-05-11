@@ -9,6 +9,7 @@ import {
   python,
   PythonProxy,
 } from "..";
+import pip from "../ext/pip";
 
 const { version, executable } = python.import("sys");
 console.log("Python version:", version.toString());
@@ -17,6 +18,10 @@ console.log("Executable:", executable.toString());
 // test("python version", () => {
 //   expect(String(version)).toMatch(/^\d+\.\d+\.\d+/);
 // });
+
+beforeAll(async () => {
+  await pip.install("numpy");
+});
 
 describe("types", async () => {
   test("bool", () => {
@@ -53,7 +58,7 @@ describe("types", async () => {
       new Map([
         ["a", 1],
         ["b", 2],
-      ])
+      ]),
     );
   });
 
@@ -149,7 +154,7 @@ describe("named argument", () => {
       python
         .str("Hello, {name}!")
         .format(kw`name=${"world"}`)
-        .valueOf()
+        .valueOf(),
     ).toBe("Hello, world!");
   });
 
@@ -297,10 +302,36 @@ test("async", () => {
 async def test():
   return "ok"
   `,
-    "async_test.py"
+    "async_test.py",
   );
   const aio = python.import("asyncio");
   expect(aio.run(test()).valueOf()).toBe("ok");
+});
+
+test("asyncio run_loop / await coroutine", async () => {
+  const { greet, slow_add } = python.runModule(
+    `
+import asyncio
+
+async def greet(name):
+    await asyncio.sleep(0)
+    return "hello " + name
+
+async def slow_add(a, b):
+    await asyncio.sleep(0.01)
+    return a + b
+`,
+    "asyncio_test.py",
+  );
+
+  const loopDone = python.run_loop();
+  try {
+    expect(await greet("world")).toBe("hello world");
+    expect(await slow_add(3, 4)).toBe(7);
+  } finally {
+    python.stop_loop();
+    await loopDone;
+  }
 });
 
 test("callback", () => {
@@ -309,7 +340,7 @@ test("callback", () => {
 def call(cb):
   return cb(61, reduce=1) + 1
   `,
-    "cb_test.py"
+    "cb_test.py",
   );
   const cb = python.callback((kw: { reduce: number }, num: number) => {
     return num - kw.reduce + 8;
